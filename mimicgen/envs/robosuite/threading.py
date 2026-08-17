@@ -573,3 +573,31 @@ class Threading_D2(Threading_D1):
                 reference=self.table_offset,
             ),
         )
+
+
+class Threading_D2_WideOOD(Threading_D2):
+    """OOD eval variant of Threading_D2: needle/tripod spawn boxes are 2x wider in x and y
+    (center-preserved), with the SAME z-rotation ranges as training. Position is the only OOD
+    axis (analogue of Square_RandRotWide vs Square_RandRotMid).
+
+    Threading_D2 (training) boxes:
+        needle x=(-0.2,0.05) w0.25 / y=(-0.25,-0.15) w0.10
+        tripod x=(-0.1,0.15) w0.25 / y=( 0.10, 0.20) w0.10
+    Doubling each width about its center gives the ranges below. needle stays on the left
+    (y<=-0.10) and tripod on the right (y>=0.05): 0.15 gap preserved, so no overlap.
+    """
+    def _get_initial_placement_bounds(self):
+        return dict(
+            needle=dict(
+                x=(-0.325, 0.175),   # center -0.075, width 0.50 (2x of 0.25)
+                y=(-0.30, -0.10),    # center -0.20,  width 0.20 (2x of 0.10)
+                z_rot=(-7. * np.pi / 6., np.pi / 6.),   # unchanged vs Threading_D2
+                reference=self.table_offset,
+            ),
+            tripod=dict(
+                x=(-0.225, 0.275),   # center  0.025, width 0.50 (2x of 0.25)
+                y=(0.05, 0.25),      # center  0.15,  width 0.20 (2x of 0.10)
+                z_rot=(-5. * np.pi / 6., -np.pi / 6.),  # unchanged vs Threading_D2
+                reference=self.table_offset,
+            ),
+        )
