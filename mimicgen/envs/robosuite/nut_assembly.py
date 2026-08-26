@@ -389,3 +389,77 @@ class Square_D2(Square_D1):
                 reference=np.array((0, 0, 0.82)),
             ),
         )
+
+
+# === Custom (project) env: wider nut spawn range + FIXED z-rotation ===
+# Subclasses Square_D0 (fixed pegs at x=+0.23, only the square nut randomized on the
+# table, round nut placed far off table, default reset). Only the nut placement bounds
+# are widened and z-rotation is fixed to 0. Nut x-range max (0.05) stays well clear of
+# the pegs, so Square_D0's default reset (no peg-collision resampling) is sufficient.
+# Used for BOTH MimicGen data generation and policy evaluation on robosuite 1.4.1.
+# Reuses the MG_Square env interface (object set unchanged).
+class Square_FixedRotWide(Square_D0):
+    """Square with z-rotation fixed to 0 and a widened nut spawn range."""
+    def _get_initial_placement_bounds(self):
+        return dict(
+            nut=dict(
+                x=(-0.20, 0.05),
+                y=(0.00, 0.30),
+                z_rot=(0., 0.),  # fixed rotation
+                # NOTE: hardcoded @self.table_offset since this might be called in init function
+                reference=np.array((0, 0, 0.82)),
+            ),
+        )
+
+
+class Square_FixedRotWideOOD(Square_D0):
+    """OOD-eval env: SAME fixed z-rotation=0 as the N100 training distribution, but the
+    nut is spawned over the WIDER central-table box (between pegs and robot base). Used only
+    to evaluate out-of-distribution generalization of models trained on Square_FixedRotWide
+    (train spawn x=(-0.20,0.05), y=(0.00,0.30)); much of this box (negative y, x extremes)
+    was never seen in training."""
+    def _get_initial_placement_bounds(self):
+        return dict(
+            nut=dict(
+                x=(-0.28, 0.12),
+                y=(-0.22, 0.22),
+                z_rot=(0., 0.),  # fixed rotation, matching training
+                # NOTE: hardcoded @self.table_offset since this might be called in init function
+                reference=np.array((0, 0, 0.82)),
+            ),
+        )
+
+
+class Square_RandRotWide(Square_D0):
+    """Square nut spawned broadly over the central table (between the pegs and the
+    robot base), symmetric in y, with free z-rotation.
+
+    Table-center frame: table x,y in [-0.4, 0.4]; pegs at x=+0.23, y=+/-0.1;
+    robot base at x=-0.56. The box below stays clear of the pegs (x_max=0.12 << 0.23)
+    and reaches toward the robot (x_min=-0.28)."""
+    def _get_initial_placement_bounds(self):
+        return dict(
+            nut=dict(
+                x=(-0.28, 0.12),
+                y=(-0.22, 0.22),
+                z_rot=(0., 2. * np.pi),  # free rotation
+                # NOTE: hardcoded @self.table_offset since this might be called in init function
+                reference=np.array((0, 0, 0.82)),
+            ),
+        )
+
+
+class Square_RandRotMid(Square_D0):
+    """Same free z-rotation as Square_RandRotWide but a HALF-WIDTH spawn box (centered on
+    the table), to isolate rotation difficulty from spawn-width difficulty. Wide box was
+    x=(-0.28,0.12) w=0.40 / y=(-0.22,0.22) w=0.44; this halves each width and re-centers."""
+    def _get_initial_placement_bounds(self):
+        return dict(
+            nut=dict(
+                x=(-0.10, 0.10),         # width 0.20 (half of wide's 0.40)
+                y=(-0.11, 0.11),         # width 0.22 (half of wide's 0.44)
+                z_rot=(0., 2. * np.pi),  # free rotation (unchanged)
+                # NOTE: hardcoded @self.table_offset since this might be called in init function
+                reference=np.array((0, 0, 0.82)),
+            ),
+        )

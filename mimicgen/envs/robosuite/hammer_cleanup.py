@@ -476,3 +476,108 @@ class HammerCleanup_D1(HammerCleanup_D0):
         self.ee_torque_bias = np.zeros(3)
         self._history_force_torque = RingBuffer(dim=6, length=16)
         self._recent_force_torque = []
+
+
+class HammerCleanup_D1_FixedDrawer(HammerCleanup_D1):
+    """
+    Deconfounded OOD variant of D1. Keeps the D1 hammer randomization (full 360-deg
+    z-yaw + wide xy spawn) but PINS the drawer to the fixed D0 training pose, so the
+    only factor pushed out of distribution is the hammer -- the drawer no longer moves
+    or rotates. Measured D0 drawer world pose = table_offset + (0.2, 0.30), z_rot=0
+    (table_offset = [-0.2, 0, 0.9]); the D1 sampler references table_offset, so a
+    degenerate range at that offset reproduces the D0 drawer exactly. Everything else
+    (movable-drawer mechanism, z-hardcode in _reset_internal, improved _check_success)
+    is inherited from D1.
+    """
+    def _get_initial_placement_bounds(self):
+        bounds = super()._get_initial_placement_bounds()
+        bounds["drawer"]["x"] = (0.2, 0.2)
+        bounds["drawer"]["y"] = (0.30, 0.30)
+        bounds["drawer"]["z_rot"] = (0.0, 0.0)
+        return bounds
+
+
+class HammerCleanup_YawBand(HammerCleanup_D1_FixedDrawer):
+    """
+    Base for the yaw-only difficulty ladder. Inherits D1's hammer rotation MECHANISM
+    (rotation_axis='y' about the hammer init_quat, which produces true table-plane yaw --
+    see D1 _get_initial_placement_bounds) and the fixed D0 drawer, but PINS the xy spawn
+    back to the narrow D0 training box so the ONLY factor that varies is the hammer yaw.
+    Concrete subclasses set YAW_HALF (half-range in radians); the band is symmetric
+    (-YAW_HALF, +YAW_HALF) and nests inside D1's full (0, 2*pi). D0 narrow spawn box:
+    x=[0.10,0.18], y=[-0.20,-0.13], reference=table_offset. Used both for the ~45-deg
+    TRAINING distribution (regenerate demos via mimicgen datagen) and the wider OOD
+    eval rungs, all sharing spawn+drawer so the ladder isolates yaw.
+    """
+    YAW_HALF = np.pi / 4.0  # default 45 deg; override per rung
+
+    def _get_initial_placement_bounds(self):
+        bounds = super()._get_initial_placement_bounds()
+        bounds["hammer"]["x"] = (0.10, 0.18)
+        bounds["hammer"]["y"] = (-0.20, -0.13)
+        bounds["hammer"]["z_rot"] = (-self.YAW_HALF, self.YAW_HALF)
+        return bounds
+
+
+class HammerCleanup_Yaw45(HammerCleanup_YawBand):
+    """~45-deg yaw band, narrow D0 spawn, fixed drawer -- the new TRAINING distribution."""
+    YAW_HALF = np.pi / 4.0
+
+
+class HammerCleanup_Yaw45_Spawn12(HammerCleanup_YawBand):
+    """
+    TRAINING distribution variant: yaw band +-45 deg + fixed D0 drawer (like Yaw45), but
+    the hammer xy spawn is widened to 1.2x the D0 training half-width about the same center
+    (D0 x=[0.10,0.18] c0.14 h0.04, y=[-0.20,-0.13] c-0.165 h0.035 -> x=[0.092,0.188],
+    y=[-0.207,-0.123]). Slightly more spawn variation than Yaw45 so in-dist is less trivially
+    saturated. Regenerate demos via mimicgen datagen (config hammer_yaw45_spawn12.json).
+    """
+    YAW_HALF = np.pi / 4.0
+
+    def _get_initial_placement_bounds(self):
+        bounds = super()._get_initial_placement_bounds()  # narrow D0 spawn + +-45 deg yaw band
+        bounds["hammer"]["x"] = (0.092, 0.188)      # 1.2x D0 half-width about center 0.14
+        bounds["hammer"]["y"] = (-0.207, -0.123)    # 1.2x D0 half-width about center -0.165
+        return bounds
+
+
+class HammerCleanup_OOD_Spawn15_Yaw45(HammerCleanup_YawBand):
+    """
+    Moderate OOD *eval* variant (not for training). Inherits the YawBand mechanism
+    (fixed D0 drawer + true table-plane yaw via rotation_axis='y') with the default
+    +-45 deg band, but WIDENS the hammer xy spawn to 1.5x the D0 training half-width
+    about the same center. D0 box x=[0.10,0.18] (c=0.14, half=0.04), y=[-0.20,-0.13]
+    (c=-0.165, half=0.035) -> 1.5x half -> x=[0.08,0.20], y=[-0.2175,-0.1125].
+    Used to eval the D0-trained models on a mild position+yaw OOD, avoiding the D1
+    floor (360 deg + 5x spawn + moving drawer).
+    """
+    YAW_HALF = np.pi / 4.0
+
+    def _get_initial_placement_bounds(self):
+        bounds = super()._get_initial_placement_bounds()  # narrow D0 spawn + +-45 deg yaw band
+        bounds["hammer"]["x"] = (0.08, 0.20)        # 1.5x D0 half-width about center 0.14
+        bounds["hammer"]["y"] = (-0.2175, -0.1125)  # 1.5x D0 half-width about center -0.165
+        return bounds
+
+
+class HammerCleanup_OOD_Spawn20_Yaw90(HammerCleanup_YawBand):
+    """
+    HARD OOD *eval* variant (not for training), for models trained on Yaw45_Spawn12.
+    Widens BOTH axes past that training distribution:
+      yaw  +-45 deg -> +-90 deg   (half the band is novel rotation)
+      xy   1.2x     -> 2.0x D0 half-width about the same center
+           x=[0.06,0.22] (c=0.14, half 0.04*2.0), y=[-0.235,-0.095] (c=-0.165, half 0.035*2.0)
+    Both still nest inside D1's full (0, 2*pi) + 5x spawn, so this sits between the
+    Spawn15_Yaw45 rung (which for a Yaw45_Spawn12-trained model is ~in-distribution:
+    identical yaw, and 64% of its spawn area lies inside the training box) and the
+    D1 floor. NOTE: yaw and spawn move together here by explicit request, so a
+    baseline-vs-aux gap measured on this env CANNOT be attributed to either factor
+    alone -- use the yaw-only YawBand rungs if factor attribution is needed.
+    """
+    YAW_HALF = np.pi / 2.0  # 90 deg
+
+    def _get_initial_placement_bounds(self):
+        bounds = super()._get_initial_placement_bounds()  # narrow D0 spawn + YAW_HALF band
+        bounds["hammer"]["x"] = (0.06, 0.22)      # 2.0x D0 half-width about center 0.14
+        bounds["hammer"]["y"] = (-0.235, -0.095)  # 2.0x D0 half-width about center -0.165
+        return bounds
