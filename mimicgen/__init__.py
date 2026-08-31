@@ -31,6 +31,14 @@ except ImportError as e:
     print("WARNING: robosuite task zoo environments not imported, possibly because robosuite_task_zoo is not installed...")
     print("Got error: {}".format(e))
 
+# ID-restricted (training) / OOD (evaluation) placement ladder. Imported last: it subclasses envs
+# from BOTH blocks above, including the task-zoo-dependent hammer_cleanup and kitchen.
+try:
+    from mimicgen.envs.robosuite.ood_ladder import *
+except ImportError as e:
+    print("WARNING: ID90/OOD placement ladder not imported...")
+    print("Got error: {}".format(e))
+
 # stores released dataset links and rollout horizons in global dictionary.
 # Structure is given below for each type of dataset:
 
