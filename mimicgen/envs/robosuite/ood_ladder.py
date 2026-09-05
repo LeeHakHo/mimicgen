@@ -35,6 +35,8 @@ left the window around the declared center sparse, and a filter cannot create de
 are none. Here the demos are generated, not filtered, so any window is equally cheap and the
 override is dropped -- every ID90 window sits on its object's own declared center.
 """
+import inspect
+
 import numpy as np
 
 from robosuite.environments.manipulation.stack import Stack
@@ -120,6 +122,34 @@ def clamp_to_table(lo, hi, table_half, margin=OOD_TABLE_MARGIN):
     # half-width by the distance from the center to the nearer edge, never past it
     half = min(half, max(0.0, min(limit - center, limit + center)))
     return (center - half, center + half)
+
+
+def declared_table_full_size(cls):
+    """The `table_full_size` an env uses when nobody overrides it, read off its own signature.
+
+    Needed because `self.table_full_size` does not exist yet at the moment several tasks read
+    their placement bounds: `Square_D0.__init__` and `NutAssembly_D0.__init__` build their sampler
+    from `_get_initial_placement_bounds()` BEFORE handing off to robosuite's `__init__` (their own
+    comments say as much -- "this might be called in init function" -- which is also why they
+    hardcode `reference` instead of using `self.table_offset`). `PerCubeSamplerMixin` does the
+    same for the stack tasks.
+
+    The first `__init__` in the MRO that declares the parameter wins, which is robosuite's own
+    task class in every case here. A caller CAN still override it through kwargs, so what this
+    returns is an assumption -- `OODPlacementMixin._load_model` checks it against the value the
+    env actually ended up with rather than trusting it.
+    """
+    for klass in cls.__mro__:
+        init = klass.__dict__.get("__init__")
+        if init is None:
+            continue
+        try:
+            param = inspect.signature(init).parameters.get("table_full_size")
+        except (TypeError, ValueError):
+            continue
+        if param is not None and param.default is not inspect.Parameter.empty:
+            return tuple(param.default)
+    return None
 
 
 class SquarePegPerResetMixin:
@@ -392,20 +422,58 @@ class OODPlacementMixin(TargetObjectsMixin):
                 out[obj_name] = new_spec
                 continue
             if self.widen_xy:
-                # table_full_size is unset while a subclass calls this from its own __init__ (the
-                # stack tasks do); those ranges are inside the table anyway, so skip the cap
-                table = getattr(self, "table_full_size", None)
+                half = self._table_half_extent()
                 for axis, key in enumerate(("x", "y")):
                     if key in spec:
                         lo, hi = scale_range(*spec[key], self.ood_scale)
-                        if table is not None:
-                            lo, hi = clamp_to_table(lo, hi, table[axis] / 2.0)
+                        if half is not None:
+                            lo, hi = clamp_to_table(lo, hi, half[axis])
                         new_spec[key] = (lo, hi)
             if self.widen_yaw and "z_rot" in spec:
                 lo, hi = spec["z_rot"]
                 new_spec["z_rot"] = fixed_width_range(lo, hi, OOD_ROT_HALF_WIDTH / self.yaw_fold)
             out[obj_name] = new_spec
         return out
+
+    def _table_half_extent(self):
+        """-> (x_half, y_half) of the table, or None when the env declares no table at all.
+
+        This used to be `getattr(self, "table_full_size", None)`, skipping the clamp whenever the
+        attribute was not set yet. It is not set yet exactly where it matters: the nut tasks build
+        their sampler from the bounds inside their own `__init__`, so square_d2 read the guard as
+        "no table" and its widened windows were never capped. That is what put the nut past the
+        edge on OOD_POS and OOD_BOTH (3 of 20 generated scenes each) and on POS_L4/L5 (4 and 10 of
+        20) -- levels that measure "the nut fell off the table" rather than a position shift --
+        while stack, three_piece, mug_cleanup, coffee_d2 and coffee_preparation, which read the
+        bounds after construction, were capped as intended.
+
+        `self._ood_clamp_table` records what was used so `_load_model` can check it.
+        """
+        size = getattr(self, "table_full_size", None)
+        if size is None:
+            size = declared_table_full_size(type(self))
+        if size is None:
+            return None
+        self._ood_clamp_table = tuple(size[:2])
+        return size[0] / 2.0, size[1] / 2.0
+
+    def _load_model(self):
+        """Check the table the clamp assumed against the one the env was actually built with.
+
+        The bounds may have been read before `table_full_size` existed, in which case the value
+        above came from the class signature rather than from this instance. By the time the model
+        is loaded the real one is set, so a caller that passed a different table -- which would
+        silently put the clamped windows in the wrong place -- fails here instead of producing
+        quietly wrong scenes.
+        """
+        super()._load_model()
+        assumed = getattr(self, "_ood_clamp_table", None)
+        actual = getattr(self, "table_full_size", None)
+        if assumed is not None and actual is not None and tuple(actual[:2]) != assumed:
+            raise ValueError(
+                f"{type(self).__name__}: the OOD x/y windows were clamped to a table of "
+                f"{assumed} but the env was built with {tuple(actual[:2])}; rebuild the env "
+                f"without overriding table_full_size, or teach the ladder about the new table")
 
 
 class PerObjectUniformRandomSampler(UniformRandomSampler):
